@@ -6,6 +6,7 @@ import ChatInterface from './ChatInterface';
 import { Camera, Sparkles, Loader2, AlertCircle, ShieldAlert, Sun, Moon, CheckCircle2, XCircle } from 'lucide-react';
 
 interface AnalysisResult {
+    face_detected?: boolean;
     issues: string[];
     routine_advice: {
         morning: string[];
@@ -62,6 +63,13 @@ export default function CosmeticAdvisor() {
             }
 
             const data = await response.json();
+
+            if (data.face_detected === false) {
+                setError('No face detected. Please take a clearer photo with your face clearly visible in the frame.');
+                setResult(null);
+                return;
+            }
+
             setResult(data);
         } catch (err: any) {
             console.error(err);
@@ -251,9 +259,20 @@ export default function CosmeticAdvisor() {
                         </div>
 
                         {error && (
-                            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl flex items-start gap-3 mb-6 relative z-10">
-                                <AlertCircle className="shrink-0 mt-0.5" size={20} />
-                                <p>{error}</p>
+                            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl flex flex-col sm:flex-row items-start gap-3 mb-6 relative z-10">
+                                <div className="flex items-start gap-3 flex-1">
+                                    <AlertCircle className="shrink-0 mt-0.5" size={20} />
+                                    <p>{error}</p>
+                                </div>
+                                {error.includes('No face detected') && (
+                                    <button
+                                        onClick={() => { setError(null); setImage(null); setResult(null); setShowCamera(true); }}
+                                        className="shrink-0 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-medium transition-colors flex items-center gap-2"
+                                    >
+                                        <Camera size={18} />
+                                        Rescan
+                                    </button>
+                                )}
                             </div>
                         )}
 

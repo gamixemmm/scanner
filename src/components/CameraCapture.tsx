@@ -11,6 +11,7 @@ interface CameraCaptureProps {
 export default function CameraCapture({ onCapture, onClose }: CameraCaptureProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const streamRef = useRef<MediaStream | null>(null);
     const [stream, setStream] = useState<MediaStream | null>(null);
     const [error, setError] = useState<string>('');
     const [isInitializing, setIsInitializing] = useState(true);
@@ -21,8 +22,9 @@ export default function CameraCapture({ onCapture, onClose }: CameraCaptureProps
             setIsInitializing(true);
             setError('');
 
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
+            if (streamRef.current) {
+                streamRef.current.getTracks().forEach(track => track.stop());
+                streamRef.current = null;
             }
 
             const mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -30,29 +32,35 @@ export default function CameraCapture({ onCapture, onClose }: CameraCaptureProps
                 audio: false
             });
 
+            streamRef.current = mediaStream;
             setStream(mediaStream);
-
-            if (videoRef.current) {
-                videoRef.current.srcObject = mediaStream;
-            }
         } catch (err: any) {
             console.error("Error accessing camera:", err);
             setError('Could not access the camera. Please ensure permissions are granted.');
         } finally {
             setIsInitializing(false);
         }
-    }, [stream]);
+    }, []);
 
     // Start camera on mount
     React.useEffect(() => {
         startCamera();
         return () => {
-            // Cleanup on unmount
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
+            if (streamRef.current) {
+                streamRef.current.getTracks().forEach(track => track.stop());
+                streamRef.current = null;
             }
         };
     }, []);
+
+    // Attach stream to video element when both are available (fixes production build
+    // where the video node may not be mounted when startCamera completes).
+    React.useEffect(() => {
+        if (!stream || !videoRef.current) return;
+        const video = videoRef.current;
+        video.srcObject = stream;
+        video.play().catch(() => {}); // Required in some environments for camera to show
+    }, [stream]);
 
     const handleCapture = () => {
         if (videoRef.current && canvasRef.current) {
@@ -73,8 +81,8 @@ export default function CameraCapture({ onCapture, onClose }: CameraCaptureProps
                 onCapture(imageDataUrl);
 
                 // Stop stream
-                if (stream) {
-                    stream.getTracks().forEach(track => track.stop());
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
                 }
             }
         }
