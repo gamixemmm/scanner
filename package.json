@@ -4,11 +4,16 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@tensorflow-models/face-landmarks-detection": "^1.0.6",
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-webgl": "^4.22.0",
+    "html5-qrcode": "^2.3.8",
     "lucide-react": "^0.575.0",
     "next": "16.1.6",
     "openai": "^6.25.0",

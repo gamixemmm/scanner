@@ -10,13 +10,15 @@ interface Message {
 
 interface ChatInterfaceProps {
     contextData: any; // The initial analysis result and user profile
+    initialMessage?: string;
+    onClose?: () => void;
 }
 
-export default function ChatInterface({ contextData }: ChatInterfaceProps) {
+export default function ChatInterface({ contextData, initialMessage, onClose }: ChatInterfaceProps) {
     const [messages, setMessages] = useState<Message[]>([
         {
             role: 'assistant',
-            content: "Hello! I'm Aura, your personal cosmetologist. I've analyzed your profile and we have some great starting points. What specific questions do you have about your skincare routine or recommended ingredients?"
+            content: initialMessage ?? "Hello! I'm Aura, your personal cosmetologist. I've analyzed your profile and we have some great starting points. What specific questions do you have about your skincare routine or recommended ingredients?"
         }
     ]);
     const [input, setInput] = useState('');

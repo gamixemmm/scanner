@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import CameraCapture from './CameraCapture';
 import ChatInterface from './ChatInterface';
-import { Camera, Sparkles, Loader2, AlertCircle, ShieldAlert, Sun, Moon, CheckCircle2, XCircle } from 'lucide-react';
+import { Camera, Sparkles, Loader2, AlertCircle, ShieldAlert, Sun, Moon, CheckCircle2, XCircle, ScanBarcode } from 'lucide-react';
 
 interface AnalysisResult {
     face_detected?: boolean;
@@ -30,12 +31,56 @@ export default function CosmeticAdvisor() {
     const [result, setResult] = useState<AnalysisResult | null>(null);
     const [error, setError] = useState<string | null>(null);
 
+    // In-camera live analysis: result and error shown as overlay in camera
+    const [cameraAnalysisResult, setCameraAnalysisResult] = useState<AnalysisResult | null>(null);
+    const [cameraAnalysisError, setCameraAnalysisError] = useState<string | null>(null);
+
     // Toggle between viewing the structured results and the chat interface
     const [viewMode, setViewMode] = useState<'results' | 'chat'>('results');
 
     const handleCapture = (base64Image: string) => {
         setImage(base64Image);
         setShowCamera(false);
+        setCameraAnalysisResult(null);
+        setCameraAnalysisError(null);
+    };
+
+    const handleAnalyzeFromCamera = async (base64Image: string, localIssues?: string[]) => {
+        setIsAnalyzing(true);
+        setCameraAnalysisError(null);
+        // Don't clear cameraAnalysisResult — keeps current labels visible while re-analyzing
+        try {
+            const response = await fetch('/api/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    image: base64Image,
+                    skinType,
+                    concerns,
+                    ingredients,
+                    localIssues,
+                }),
+            });
+            if (!response.ok) throw new Error('Analysis request failed');
+            const data = await response.json();
+            if (data.face_detected === false) {
+                setCameraAnalysisError('No face detected. Position your face clearly and try again.');
+                return;
+            }
+
+            // Store the data but keep camera open so they can click "Show Results"
+            setImage(base64Image);
+            setResult(data);
+            setViewMode('results');
+            setCameraAnalysisResult(data);
+            // Persist scan results for product scan page
+            try { localStorage.setItem('aura_scan_result', JSON.stringify(data)); } catch { }
+        } catch (err: any) {
+            console.error(err);
+            setCameraAnalysisError('Analysis failed. Try again.');
+        } finally {
+            setIsAnalyzing(false);
+        }
     };
 
     const handleAnalyze = async () => {
@@ -69,8 +114,9 @@ export default function CosmeticAdvisor() {
                 setResult(null);
                 return;
             }
-
             setResult(data);
+            // Persist scan results for product scan page
+            try { localStorage.setItem('aura_scan_result', JSON.stringify(data)); } catch { }
         } catch (err: any) {
             console.error(err);
             setError('An error occurred during analysis. Please try again.');
@@ -104,9 +150,16 @@ export default function CosmeticAdvisor() {
                 <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight mb-4 gradient-text">
                     Aura Cosmetic Advisor
                 </h1>
-                <p className="text-lg text-white/60 mb-2 max-w-2xl mx-auto">
+                <p className="text-lg text-white/60 mb-4 max-w-2xl mx-auto">
                     Advanced AI-powered cosmetic analysis. Get personalized product and ingredient compatibility insights.
                 </p>
+                <Link
+                    href="/product-scan"
+                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 hover:text-white font-medium transition-all active:scale-[0.98]"
+                >
+                    <ScanBarcode size={20} />
+                    Scan a Product Barcode
+                </Link>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -127,8 +180,8 @@ export default function CosmeticAdvisor() {
                                 <div className="p-4 bg-white/5 group-hover:bg-violet-500/20 rounded-full mb-3 transition-colors">
                                     <Camera className="text-white/60 group-hover:text-violet-400" size={32} />
                                 </div>
-                                <p className="font-medium text-white/80">Click to open camera</p>
-                                <p className="text-sm text-white/40 mt-1">Take a clear photo of your face</p>
+                                <p className="font-medium text-white/80">Start Scan</p>
+                                <p className="text-sm text-white/40 mt-1">Click to automatically analyze your face</p>
                             </div>
                         ) : (
                             <div className="relative aspect-square w-full rounded-xl overflow-hidden group">
@@ -429,7 +482,15 @@ export default function CosmeticAdvisor() {
             {showCamera && (
                 <CameraCapture
                     onCapture={handleCapture}
-                    onClose={() => setShowCamera(false)}
+                    onClose={() => {
+                        setShowCamera(false);
+                        setCameraAnalysisResult(null);
+                        setCameraAnalysisError(null);
+                    }}
+                    onAnalyze={handleAnalyzeFromCamera}
+                    analysisOverlay={cameraAnalysisResult?.issues ?? null}
+                    isAnalyzing={isAnalyzing}
+                    analysisError={cameraAnalysisError}
                 />
             )}
         </div>

@@ -2,20 +2,20 @@ import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
-    try {
-        const { messages, contextData } = await req.json();
+  try {
+    const { messages, contextData } = await req.json();
 
-        if (!messages || !Array.isArray(messages)) {
-            return NextResponse.json({ error: 'Invalid messages format' }, { status: 400 });
-        }
+    if (!messages || !Array.isArray(messages)) {
+      return NextResponse.json({ error: 'Invalid messages format' }, { status: 400 });
+    }
 
-        const systemPrompt = `You are Aura, an elite personal cosmetologist and AI skincare advisor.
+    const systemPrompt = `You are Aura, an elite personal cosmetologist and AI skincare advisor.
 Your tone is professional, sophisticated, empathetic, and encouraging.
 
 CRITICAL MEDICAL & SAFETY RULES (STRICTLY ENFORCED):
@@ -35,34 +35,24 @@ INSTRUCTIONS:
 - Do not repeat the full analysis unless specifically asked.
 - Act as a continued conversation from the initial analysis they just received.`;
 
-        // Filter messages to ensure they match OpenAI's expected format (role and content)
-        // We also prepend our system prompt to the conversation history
-        const apiMessages = [
-            { role: "system", content: systemPrompt },
-            ...messages.map((m: any) => ({
-                role: m.role,
-                content: m.content
-            }))
-        ];
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages.map((m: any) => ({ role: m.role, content: m.content })),
+      ],
+    });
 
-        const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini", // Use mini for faster chat responses or gpt-4o if preferred
-            messages: apiMessages,
-        });
+    const aiMessage = response.choices[0]?.message;
+    if (!aiMessage) throw new Error('No response from OpenAI');
 
-        const aiMessage = response.choices[0]?.message;
+    return NextResponse.json(aiMessage);
 
-        if (!aiMessage) {
-            throw new Error("No response from OpenAI");
-        }
-
-        return NextResponse.json(aiMessage);
-
-    } catch (error: any) {
-        console.error("Chat error:", error);
-        return NextResponse.json(
-            { error: "Failed to process chat message." },
-            { status: 500 }
-        );
-    }
+  } catch (error: any) {
+    console.error('Chat error:', error);
+    return NextResponse.json(
+      { error: 'Failed to process chat message.' },
+      { status: 500 }
+    );
+  }
 }
