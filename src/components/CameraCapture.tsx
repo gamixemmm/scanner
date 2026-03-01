@@ -460,6 +460,10 @@ export default function CameraCapture({
             if (!scriptLoaded) return;
 
             try {
+                setDebugInfo('waiting for camera…');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                if (cancelled) return;
+
                 setDebugInfo('initializing FaceMesh…');
 
                 const FaceMeshClass = (window as any).FaceMesh;
