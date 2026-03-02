@@ -313,6 +313,37 @@ function getLandmarkIndicesForIssue(issue: string): number[] {
     return [10, 234, 454];
 }
 
+// Injects the MediaPipe face_mesh.js script tag once and resolves when ready.
+// This bypasses webpack bundling entirely — the script runs in the browser's global scope,
+// making window.FaceMesh available without any module system involvement.
+let mediaPipeScriptPromise: Promise<void> | null = null;
+function loadMediaPipeScript(): Promise<void> {
+    if (mediaPipeScriptPromise) return mediaPipeScriptPromise;
+    mediaPipeScriptPromise = new Promise<void>((resolve, reject) => {
+        // Already loaded from a previous mount
+        if (typeof window !== 'undefined' && (window as any).FaceMesh) {
+            resolve();
+            return;
+        }
+        const src = `${MP_CDN}/face_mesh.js`;
+        const existing = document.querySelector(`script[src="${src}"]`);
+        if (existing) {
+            // Script tag exists but FaceMesh may not be ready yet — poll briefly
+            const check = setInterval(() => {
+                if ((window as any).FaceMesh) { clearInterval(check); resolve(); }
+            }, 50);
+            return;
+        }
+        const script = document.createElement('script');
+        script.src = src;
+        script.crossOrigin = 'anonymous';
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Failed to load MediaPipe face_mesh.js from CDN'));
+        document.head.appendChild(script);
+    });
+    return mediaPipeScriptPromise;
+}
+
 interface CameraCaptureProps {
     onCapture: (base64Image: string) => void;
     onClose: () => void;
@@ -349,54 +380,8 @@ export default function CameraCapture({
     const [stream, setStream] = useState<MediaStream | null>(null);
     const [error, setError] = useState<string>('');
     const [isInitializing, setIsInitializing] = useState(true);
-    const [scriptLoaded, setScriptLoaded] = useState(typeof window !== 'undefined' ? !!(window as any).FaceMesh : false);
     const [meshReady, setMeshReady] = useState(false);
-    const [debugInfo, setDebugInfo] = useState<string>('waiting for script…');
-
-    // Robust dynamic script loader that bypasses Next.js optimisations
-    useEffect(() => {
-        if (typeof window === 'undefined' || scriptLoaded) return;
-
-        const src = `${MP_CDN}/face_mesh.js`;
-
-        // If it's already in the DOM and FaceMesh is available, we're good
-        if (document.querySelector(`script[src="${src}"]`) && (window as any).FaceMesh) {
-            setScriptLoaded(true);
-            return;
-        }
-
-        let script = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement;
-
-        const handleLoad = () => {
-            if ((window as any).FaceMesh) setScriptLoaded(true);
-        };
-        const handleError = () => setDebugInfo('Script load error');
-
-        if (!script) {
-            script = document.createElement('script');
-            script.src = src;
-            script.async = true;
-            script.crossOrigin = 'anonymous';
-            document.body.appendChild(script);
-        }
-
-        script.addEventListener('load', handleLoad);
-        script.addEventListener('error', handleError);
-
-        // Polling fallback just in case the load event was missed
-        const pollTimer = setInterval(() => {
-            if ((window as any).FaceMesh) {
-                setScriptLoaded(true);
-                clearInterval(pollTimer);
-            }
-        }, 100);
-
-        return () => {
-            script.removeEventListener('load', handleLoad);
-            script.removeEventListener('error', handleError);
-            clearInterval(pollTimer);
-        };
-    }, [scriptLoaded]);
+    const [debugInfo, setDebugInfo] = useState<string>('loading mesh…');
 
     // Multi-angle scan state
     type ScanPhase = 'idle' | 'straight' | 'left' | 'right' | 'done';
@@ -453,18 +438,19 @@ export default function CameraCapture({
     }, [stream]);
 
     // ── MediaPipe FaceMesh initialisation ───────────────────────────────────
+    // Runs once on mount. Loads the CDN script, creates the FaceMesh instance,
+    // and fetches mesh connection pairs from @tensorflow-models/face-landmarks-detection
+    // (pure JS utility — no TF.js ops or network model fetch needed).
     useEffect(() => {
         let cancelled = false;
 
         async function init() {
-            if (!scriptLoaded) return;
-
             try {
-                setDebugInfo('waiting for camera…');
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                if (cancelled) return;
+                setDebugInfo('loading MediaPipe…');
 
-                setDebugInfo('initializing FaceMesh…');
+                // 1. Load face_mesh.js as a <script> so window.FaceMesh is available
+                await loadMediaPipeScript();
+                if (cancelled) return;
 
                 const FaceMeshClass = (window as any).FaceMesh;
                 if (!FaceMeshClass) throw new Error('window.FaceMesh not found after script load');
@@ -521,7 +507,7 @@ export default function CameraCapture({
             meshPairsRef.current = [];
             setMeshReady(false);
         };
-    }, [scriptLoaded]);
+    }, []);
 
     // ── Draw loop ────────────────────────────────────────────────────────────
     // Sends each video frame to MediaPipe, then draws the mesh lines returned

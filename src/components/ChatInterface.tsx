@@ -23,6 +23,7 @@ export default function ChatInterface({ contextData, initialMessage, onClose }: 
     ]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [initialMessageSent, setInitialMessageSent] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
@@ -32,6 +33,48 @@ export default function ChatInterface({ contextData, initialMessage, onClose }: 
     useEffect(() => {
         scrollToBottom();
     }, [messages]);
+    
+    // Auto-send initial message if it's a product question
+    useEffect(() => {
+        if (initialMessage && !initialMessageSent && initialMessage.includes('scanned')) {
+            setInitialMessageSent(true);
+            // Add user message and trigger API call
+            const userMsg: Message = { role: 'user', content: initialMessage };
+            setMessages([userMsg]);
+            setIsLoading(true);
+            
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    messages: [userMsg],
+                    contextData
+                }),
+            })
+            .then(async (response) => {
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to send message');
+                }
+                return response.json();
+            })
+            .then((data) => {
+                setMessages([userMsg, { role: 'assistant', content: data.content }]);
+            })
+            .catch((error: any) => {
+                console.error('[ChatInterface] Initial message error:', error);
+                setMessages([
+                    userMsg,
+                    { role: 'assistant', content: `I'm sorry, I'm having trouble connecting right now. Error: ${error.message}. Please try again.` }
+                ]);
+            })
+            .finally(() => {
+                setIsLoading(false);
+            });
+        }
+    }, [initialMessage, initialMessageSent, contextData]);
 
     const handleSend = async () => {
         if (!input.trim() || isLoading) return;
@@ -44,6 +87,9 @@ export default function ChatInterface({ contextData, initialMessage, onClose }: 
         setIsLoading(true);
 
         try {
+            console.log('[ChatInterface] Sending message to API...');
+            console.log('[ChatInterface] Context data:', contextData);
+            
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: {
@@ -55,17 +101,23 @@ export default function ChatInterface({ contextData, initialMessage, onClose }: 
                 }),
             });
 
+            console.log('[ChatInterface] Response status:', response.status);
+
             if (!response.ok) {
-                throw new Error('Failed to send message');
+                const errorData = await response.json();
+                console.error('[ChatInterface] API error:', errorData);
+                throw new Error(errorData.error || 'Failed to send message');
             }
 
             const data = await response.json();
+            console.log('[ChatInterface] Response received:', data);
+            
             setMessages([...newMessages, { role: 'assistant', content: data.content }]);
-        } catch (error) {
-            console.error(error);
+        } catch (error: any) {
+            console.error('[ChatInterface] Error:', error);
             setMessages([
                 ...newMessages,
-                { role: 'assistant', content: "I'm sorry, I'm having trouble connecting right now. Please try again." }
+                { role: 'assistant', content: `I'm sorry, I'm having trouble connecting right now. Error: ${error.message}. Please try again.` }
             ]);
         } finally {
             setIsLoading(false);
@@ -79,17 +131,77 @@ export default function ChatInterface({ contextData, initialMessage, onClose }: 
         }
     };
 
-    // Basic markdown parser for bold text in chat
+    // Enhanced markdown parser for chat messages
     const renderMessageContent = (text: string) => {
-        // Split by **text** and return fragments
-        // This handles basic bolding which the AI frequently uses for ingredients
-        const parts = text.split(/(\*\*.*?\*\*)/g);
-        return parts.map((part, i) => {
-            if (part.startsWith('**') && part.endsWith('**')) {
-                return <strong key={i} className="text-white font-semibold">{part.slice(2, -2)}</strong>;
+        const lines = text.split('\n');
+        const elements: React.ReactElement[] = [];
+        let currentList: string[] = [];
+        let listKey = 0;
+
+        const flushList = () => {
+            if (currentList.length > 0) {
+                elements.push(
+                    <ul key={`list-${listKey++}`} className="list-disc list-inside space-y-1 my-2 ml-2">
+                        {currentList.map((item, i) => (
+                            <li key={i} className="text-white/80">{parseBold(item)}</li>
+                        ))}
+                    </ul>
+                );
+                currentList = [];
             }
-            return <span key={i}>{part}</span>;
+        };
+
+        const parseBold = (text: string) => {
+            const parts = text.split(/(\*\*.*?\*\*)/g);
+            return parts.map((part, i) => {
+                if (part.startsWith('**') && part.endsWith('**')) {
+                    return <strong key={i} className="text-white font-semibold">{part.slice(2, -2)}</strong>;
+                }
+                return <span key={i}>{part}</span>;
+            });
+        };
+
+        lines.forEach((line, idx) => {
+            // Heading (###)
+            if (line.startsWith('### ')) {
+                flushList();
+                elements.push(
+                    <h3 key={`h3-${idx}`} className="text-base font-bold text-violet-300 mt-4 mb-2">
+                        {line.slice(4)}
+                    </h3>
+                );
+            }
+            // Heading (##)
+            else if (line.startsWith('## ')) {
+                flushList();
+                elements.push(
+                    <h2 key={`h2-${idx}`} className="text-lg font-bold text-violet-200 mt-4 mb-2">
+                        {line.slice(3)}
+                    </h2>
+                );
+            }
+            // List item (- or *)
+            else if (line.match(/^[\-\*]\s+/)) {
+                currentList.push(line.slice(2));
+            }
+            // Empty line
+            else if (line.trim() === '') {
+                flushList();
+                elements.push(<div key={`br-${idx}`} className="h-2" />);
+            }
+            // Regular paragraph
+            else {
+                flushList();
+                elements.push(
+                    <p key={`p-${idx}`} className="text-white/80 leading-relaxed">
+                        {parseBold(line)}
+                    </p>
+                );
+            }
         });
+
+        flushList();
+        return elements;
     };
 
     return (

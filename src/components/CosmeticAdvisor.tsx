@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import CameraCapture from './CameraCapture';
 import ChatInterface from './ChatInterface';
@@ -21,6 +22,9 @@ interface AnalysisResult {
 }
 
 export default function CosmeticAdvisor() {
+    const searchParams = useSearchParams();
+    const productParam = searchParams?.get('product');
+    
     const [image, setImage] = useState<string | null>(null);
     const [showCamera, setShowCamera] = useState(false);
     const [skinType, setSkinType] = useState('Unknown');
@@ -37,6 +41,31 @@ export default function CosmeticAdvisor() {
 
     // Toggle between viewing the structured results and the chat interface
     const [viewMode, setViewMode] = useState<'results' | 'chat'>('results');
+    
+    // Load saved face analysis from localStorage on mount
+    useEffect(() => {
+        const savedData = localStorage.getItem('aura_face_analysis');
+        if (savedData) {
+            try {
+                const parsed = JSON.parse(savedData);
+                if (parsed.skinType) setSkinType(parsed.skinType);
+                if (parsed.concerns) setConcerns(parsed.concerns);
+                if (parsed.ingredients) setIngredients(parsed.ingredients);
+                if (parsed.image) setImage(parsed.image);
+                if (parsed.result) setResult(parsed.result);
+                console.log('[CosmeticAdvisor] Loaded saved face analysis from localStorage');
+            } catch (e) {
+                console.error('[CosmeticAdvisor] Error loading saved data:', e);
+            }
+        }
+    }, []);
+    
+    // If product parameter exists, automatically switch to chat mode
+    useEffect(() => {
+        if (productParam) {
+            setViewMode('chat');
+        }
+    }, [productParam]);
 
     const handleCapture = (base64Image: string) => {
         setImage(base64Image);
@@ -73,8 +102,19 @@ export default function CosmeticAdvisor() {
             setResult(data);
             setViewMode('results');
             setCameraAnalysisResult(data);
-            // Persist scan results for product scan page
-            try { localStorage.setItem('aura_scan_result', JSON.stringify(data)); } catch { }
+            
+            // Save to localStorage
+            localStorage.setItem('aura_face_analysis', JSON.stringify({
+                timestamp: Date.now(),
+                skinType,
+                concerns,
+                ingredients,
+                image: base64Image,
+                result: data,
+                hasAnalysis: true,
+            }));
+            
+            console.log('[CosmeticAdvisor] Camera analysis saved to localStorage');
         } catch (err: any) {
             console.error(err);
             setCameraAnalysisError('Analysis failed. Try again.');
@@ -114,9 +154,21 @@ export default function CosmeticAdvisor() {
                 setResult(null);
                 return;
             }
+
             setResult(data);
-            // Persist scan results for product scan page
-            try { localStorage.setItem('aura_scan_result', JSON.stringify(data)); } catch { }
+            
+            // Save face analysis to localStorage so it persists
+            localStorage.setItem('aura_face_analysis', JSON.stringify({
+                timestamp: Date.now(),
+                skinType,
+                concerns,
+                ingredients,
+                image,
+                result: data,
+                hasAnalysis: true,
+            }));
+            
+            console.log('[CosmeticAdvisor] Face analysis saved to localStorage');
         } catch (err: any) {
             console.error(err);
             setError('An error occurred during analysis. Please try again.');
@@ -130,16 +182,31 @@ export default function CosmeticAdvisor() {
         setResult(null);
         setError(null);
         setViewMode('results');
+        // Clear saved data when starting new analysis
+        localStorage.removeItem('aura_face_analysis');
+        console.log('[CosmeticAdvisor] Cleared saved face analysis');
     };
 
     const getChatContextData = () => {
+        // Always try to load the most recent face analysis from localStorage
+        let savedAnalysis = null;
+        try {
+            const savedData = localStorage.getItem('aura_face_analysis');
+            if (savedData) {
+                savedAnalysis = JSON.parse(savedData);
+            }
+        } catch (e) {
+            console.error('[CosmeticAdvisor] Error loading saved analysis for chat:', e);
+        }
+
         return {
             userProfile: {
-                skinType,
-                concerns,
-                currentIngredients: ingredients
+                skinType: savedAnalysis?.skinType || skinType,
+                concerns: savedAnalysis?.concerns || concerns,
+                currentIngredients: savedAnalysis?.ingredients || ingredients
             },
-            analysisResult: result
+            analysisResult: savedAnalysis?.result || result,
+            hasFaceAnalysis: !!(savedAnalysis?.hasAnalysis || result)
         };
     };
 
@@ -155,10 +222,10 @@ export default function CosmeticAdvisor() {
                 </p>
                 <Link
                     href="/product-scan"
-                    className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 hover:text-white font-medium transition-all active:scale-[0.98]"
+                    className="inline-flex items-center gap-2 text-white/70 hover:text-violet-300 text-sm font-medium transition-colors"
                 >
-                    <ScanBarcode size={20} />
-                    Scan a Product Barcode
+                    <ScanBarcode size={18} />
+                    Step 3 – Scan a product barcode
                 </Link>
             </div>
 
@@ -291,12 +358,13 @@ export default function CosmeticAdvisor() {
                                 {viewMode === 'results' ? 'Analysis Results' : 'Personal Cosmetologist UI'}
                             </h2>
 
-                            {/* Toggle rendering mode if we have a result */}
-                            {result && (
+                            {/* Toggle rendering mode if we have a result OR product parameter */}
+                            {(result || productParam) && (
                                 <div className="flex bg-black/40 rounded-lg p-1 border border-white/10">
                                     <button
                                         onClick={() => setViewMode('results')}
                                         className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'results' ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}
+                                        disabled={!result}
                                     >
                                         Structured View
                                     </button>
@@ -462,7 +530,20 @@ export default function CosmeticAdvisor() {
 
                         {result && viewMode === 'chat' && (
                             <div className="flex-1 flex flex-col min-h-0 relative z-10 animate-in fade-in zoom-in-95 duration-300">
-                                <ChatInterface contextData={getChatContextData()} />
+                                <ChatInterface 
+                                    contextData={getChatContextData()} 
+                                    initialMessage={productParam ? `I just scanned a product: "${productParam}". Can you tell me if this product is good for my skin and if it's compatible with my current routine?` : undefined}
+                                />
+                            </div>
+                        )}
+                        
+                        {/* Show chat even without analysis result if product parameter exists */}
+                        {!result && viewMode === 'chat' && productParam && (
+                            <div className="flex-1 flex flex-col min-h-0 relative z-10 animate-in fade-in zoom-in-95 duration-300">
+                                <ChatInterface 
+                                    contextData={getChatContextData()} 
+                                    initialMessage={`I just scanned a product: "${productParam}". Can you tell me about this product and whether it would be good for my skin?`}
+                                />
                             </div>
                         )}
 
