@@ -2,6 +2,7 @@
 
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Camera, X, RefreshCw, Sparkles } from 'lucide-react';
+import { requestCameraPermission } from '@/utils/permissions';
 
 const DEBUG_MESH = true;
 
@@ -381,6 +382,7 @@ export default function CameraCapture({
     const [error, setError] = useState<string>('');
     const [isInitializing, setIsInitializing] = useState(true);
     const [meshReady, setMeshReady] = useState(false);
+    const [meshError, setMeshError] = useState<string | null>(null);
     const [debugInfo, setDebugInfo] = useState<string>('loading mesh…');
 
     // Multi-angle scan state
@@ -402,18 +404,36 @@ export default function CameraCapture({
         try {
             setIsInitializing(true);
             setError('');
+            
             if (streamRef.current) {
                 streamRef.current.getTracks().forEach((t) => t.stop());
                 streamRef.current = null;
             }
+
+            // Try requesting permission first (non-blocking — always falls through to getUserMedia)
+            try {
+                await requestCameraPermission();
+            } catch (permErr) {
+                console.warn('[CameraCapture] Permission pre-check failed, attempting getUserMedia directly:', permErr);
+            }
+
+            // Always attempt getUserMedia — this is the real permission gate on Android WebView
             const mediaStream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'user' },
+                video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
                 audio: false,
             });
             streamRef.current = mediaStream;
             setStream(mediaStream);
-        } catch {
-            setError('Could not access the camera. Please ensure permissions are granted.');
+        } catch (err) {
+            console.error('[CameraCapture] Camera access failed:', err);
+            const message = err instanceof Error ? err.message : '';
+            if (message.includes('NotAllowedError') || message.includes('Permission')) {
+                setError('Camera permission denied. Please grant camera access in your device settings and try again.');
+            } else if (message.includes('NotFoundError') || message.includes('DevicesNotFound')) {
+                setError('No camera found on this device.');
+            } else {
+                setError('Could not access the camera. Please ensure permissions are granted.');
+            }
         } finally {
             setIsInitializing(false);
         }
@@ -438,9 +458,19 @@ export default function CameraCapture({
     }, [stream]);
 
     // ── MediaPipe FaceMesh initialisation ───────────────────────────────────
-    // Runs once on mount. Loads the CDN script, creates the FaceMesh instance,
-    // and fetches mesh connection pairs from @tensorflow-models/face-landmarks-detection
-    // (pure JS utility — no TF.js ops or network model fetch needed).
+    const [meshInitKey, setMeshInitKey] = useState(0);
+    const retryMeshInit = useCallback(() => {
+        setMeshError(null);
+        setMeshReady(false);
+        // Reset the cached promise so the script can be re-loaded
+        mediaPipeScriptPromise = null;
+        if (faceMeshRef.current) {
+            try { faceMeshRef.current.close(); } catch { /* ignore */ }
+            faceMeshRef.current = null;
+        }
+        setMeshInitKey(k => k + 1);
+    }, []);
+
     useEffect(() => {
         let cancelled = false;
 
@@ -485,6 +515,7 @@ export default function CameraCapture({
 
                 faceMeshRef.current = faceMesh;
                 setMeshReady(true);
+                setMeshError(null);
                 setDebugInfo('mesh ready');
                 if (DEBUG_MESH) console.log('[mesh] FaceMesh ready');
             } catch (e) {
@@ -492,6 +523,7 @@ export default function CameraCapture({
                     const msg = e instanceof Error ? e.message : String(e);
                     console.error('[mesh] init error:', e);
                     setDebugInfo(`init error: ${msg}`);
+                    setMeshError('AI engine failed to load. Tap retry.');
                 }
             }
         }
@@ -507,7 +539,7 @@ export default function CameraCapture({
             meshPairsRef.current = [];
             setMeshReady(false);
         };
-    }, []);
+    }, [meshInitKey]);
 
     // ── Draw loop ────────────────────────────────────────────────────────────
     // Sends each video frame to MediaPipe, then draws the mesh lines returned
@@ -530,15 +562,6 @@ export default function CameraCapture({
             if (!ctx) return;
 
             ctx.clearRect(0, 0, overlay.width, overlay.height);
-
-            // Small green dot so we can confirm the overlay canvas is active
-            ctx.fillStyle = 'rgba(0,255,100,0.8)';
-            ctx.beginPath();
-            ctx.arc(24, 24, 8, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
 
             const landmarks: Array<{ x: number; y: number; z: number }> | undefined =
                 results.multiFaceLandmarks?.[0];
@@ -763,11 +786,6 @@ export default function CameraCapture({
                 }
             } else {
                 if (DEBUG_MESH) setDebugInfo('faces:0 — move closer or improve lighting');
-                ctx.fillStyle = 'rgba(255,255,255,0.6)';
-                ctx.font = '14px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText('Position your face in the frame', overlay.width / 2, overlay.height / 2);
             }
         });
 
@@ -835,11 +853,7 @@ export default function CameraCapture({
         straightImageRef.current = null;
     }, [onAnalyze, isAnalyzing, setScanPhaseSafe]);
 
-    useEffect(() => {
-        if (meshReady && scanPhaseRef.current === 'idle' && !isAnalyzingRef.current && !analysisOverlayRef.current) {
-            startMultiScan();
-        }
-    }, [meshReady, startMultiScan]);
+    // Scan only starts when user clicks Start Scan button (no auto-start)
 
     const handleCapture = useCallback(() => {
         if (!videoRef.current || !canvasRef.current) return;
@@ -859,131 +873,143 @@ export default function CameraCapture({
 
     // ── Render ───────────────────────────────────────────────────────────────
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-            <div className="glass-panel w-full max-w-lg rounded-2xl overflow-hidden relative border border-white/10 shadow-2xl">
-                <div className="absolute top-4 right-4 z-10 flex gap-2">
-                    <button
-                        onClick={startCamera}
-                        className="p-2 bg-black/50 hover:bg-black/70 rounded-full text-white transition-colors"
-                        title="Switch Camera / Restart"
-                    >
-                        <RefreshCw size={20} />
-                    </button>
-                    <button
-                        onClick={onClose}
-                        className="p-2 bg-black/50 hover:bg-red-500/80 rounded-full text-white transition-colors"
-                    >
-                        <X size={20} />
-                    </button>
-                </div>
-
-                <div className="relative aspect-[3/4] sm:aspect-video w-full bg-neutral-900 flex items-center justify-center overflow-hidden">
-                    {error ? (
-                        <div className="p-6 text-center text-red-400">
-                            <p>{error}</p>
-                            <button
-                                onClick={startCamera}
-                                className="mt-4 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors"
-                            >
-                                Try Again
-                            </button>
-                        </div>
-                    ) : isInitializing ? (
-                        <div className="text-white/60 animate-pulse flex flex-col items-center">
-                            <Camera size={32} className="mb-2 opacity-50" />
-                            <p>Initializing camera…</p>
-                        </div>
-                    ) : (
-                        <>
-                            {/* Camera container: video + mesh canvas — kept behind overlays */}
-                            <div className="absolute inset-0 z-0" aria-hidden>
-                                <video
-                                    ref={videoRef}
-                                    autoPlay
-                                    playsInline
-                                    muted
-                                    className="absolute inset-0 w-full h-full object-cover"
-                                />
-                                <canvas
-                                    ref={overlayRef}
-                                    className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                                />
-                            </div>
-                            {/* Scanning badge — visible whenever an analysis request is in flight */}
-                            {isAnalyzing && (
-                                <div className="absolute top-4 left-4 z-20 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm rounded-full px-3 py-1.5 pointer-events-none">
-                                    <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse" />
-                                    <span className="text-xs text-white/80 font-medium">Scanning…</span>
-                                </div>
-                            )}
-                            {DEBUG_MESH && (
-                                <div
-                                    className="absolute bottom-2 left-2 right-2 z-20 rounded bg-black/80 px-2 py-1.5 font-mono text-xs text-green-400 pointer-events-none"
-                                    style={{ wordBreak: 'break-all' }}
-                                >
-                                    [debug] {debugInfo} | Phase: {scanPhase}
-                                </div>
-                            )}
-
-                            {/* Multi-scan UI overlay instruction — on top of camera container */}
-                            {scanPhase !== 'idle' && scanPhase !== 'done' && (
-                                <div className="absolute inset-x-0 top-8 z-[100] flex justify-center pointer-events-none px-4">
-                                    <div className="bg-black/80 backdrop-blur-md border border-white/20 px-6 py-3 rounded-full flex items-center gap-4 shadow-2xl shadow-black/50 animate-in fade-in slide-in-from-top-4 duration-300">
-                                        <div className="w-6 h-6 rounded-full border-[3px] border-violet-500 border-t-transparent animate-spin"></div>
-                                        <div className="flex flex-col items-start justify-center">
-                                            <h3 className="text-[17px] font-bold text-white leading-tight">
-                                                {scanPhase === 'straight' && 'Look Straight at Camera'}
-                                                {scanPhase === 'left' && 'Slowly Turn Head Left'}
-                                                {scanPhase === 'right' && 'Slowly Turn Head Right'}
-                                            </h3>
-                                            <p className="text-white/60 text-[11px] font-medium tracking-wide mt-0.5 uppercase">Hold pose until prompt changes</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-                        </>
-                    )}
-                </div>
-
-                <div className="p-6 flex flex-col items-center border-t border-white/5 bg-black/40">
-                    {analysisError && (
-                        <p className="text-amber-400/90 text-sm mb-3 text-center">{analysisError}</p>
-                    )}
-                    <p className="text-white/70 text-sm mb-4 text-center">
-                        {meshReady
-                            ? analysisOverlay
-                                ? 'Analysis Complete. Click below to view your personalized routine.'
-                                : scanPhase !== 'idle' ? 'Scanning all angles...' : 'Ready.'
-                            : 'Loading face mesh…'}
-                    </p>
-                    <div className="flex flex-wrap gap-3 justify-center z-40 relative">
-                        {analysisOverlay ? (
-                            <button
-                                onClick={onClose}
-                                className="flex items-center gap-2 px-10 py-4 rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white font-bold text-lg shadow-lg shadow-fuchsia-900/20 transition-all active:scale-95"
-                            >
-                                <Sparkles size={24} />
-                                <span>Show Results</span>
-                            </button>
-                        ) : (
-                            <>
-                                {onAnalyze && scanPhase === 'idle' && (
-                                    <button
-                                        onClick={startMultiScan}
-                                        disabled={isAnalyzing || !meshReady}
-                                        className="flex items-center gap-2 px-6 py-3 rounded-full bg-white/10 hover:bg-white/20 text-white font-medium transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border border-white/20"
-                                    >
-                                        <RefreshCw size={18} />
-                                        <span>Restart Scan</span>
-                                    </button>
-                                )}
-                            </>
-                        )}
-                    </div>
-                </div>
-
-                <canvas ref={canvasRef} className="hidden" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90">
+            {/* Header / Top controls */}
+            <div className="absolute top-0 inset-x-0 z-50 px-4 py-safe-top pt-8 pb-4 flex justify-between items-center bg-gradient-to-b from-black/50 to-transparent">
+                <button
+                    onClick={onClose}
+                    className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-md flex items-center justify-center text-white"
+                >
+                    <X size={20} />
+                </button>
             </div>
+
+            <div className="relative w-full h-full flex items-center justify-center overflow-hidden bg-zinc-900">
+                {error ? (
+                    <div className="absolute inset-0 z-50 flex flex-col items-center justify-center p-6 text-center bg-zinc-900">
+                        <p className="text-red-400 mb-4">{error}</p>
+                        <button
+                            onClick={startCamera}
+                            className="px-6 py-3 bg-white text-black font-bold rounded-full transition-transform active:scale-95"
+                        >
+                            Try Again
+                        </button>
+                    </div>
+                ) : isInitializing ? (
+                    <div className="absolute inset-0 z-50 flex flex-col items-center justify-center text-white/60 animate-pulse bg-zinc-900">
+                        <Camera size={32} className="mb-3 opacity-50" />
+                        <p className="font-medium tracking-wide">Initializing camera…</p>
+                    </div>
+                ) : (
+                    <>
+                        {/* Video Layer */}
+                        <video
+                            ref={videoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="absolute inset-0 w-full h-full object-contain bg-black"
+                        />
+                        {/* Mesh Overlay */}
+                        <canvas
+                            ref={overlayRef}
+                            className="absolute inset-0 w-full h-full object-contain opacity-30 mix-blend-screen pointer-events-none"
+                        />
+
+                        {/* Mesh Loading Overlay */}
+                        {!meshReady && (
+                            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/30 pointer-events-none">
+                                <div className="flex flex-col items-center gap-3 animate-pulse">
+                                    <div className="w-12 h-12 border-[3px] border-white/40 border-t-white rounded-full animate-spin"></div>
+                                    <p className="text-white/90 text-sm font-semibold tracking-wide">
+                                        {meshError ? meshError : 'Loading AI Engine…'}
+                                    </p>
+                                    {meshError && (
+                                        <button
+                                            onClick={retryMeshInit}
+                                            className="pointer-events-auto mt-1 px-5 py-2 bg-white text-black text-sm font-bold rounded-full active:scale-95 transition-transform"
+                                        >
+                                            Retry
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Analysis Feedback Layer */}
+                        {isAnalyzing && (
+                            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-30 flex items-center justify-center pb-20">
+                                <div className="flex flex-col items-center animate-fade-in">
+                                    <div className="w-20 h-20 border-[3px] border-[#5A8F53] border-t-transparent rounded-full animate-spin mb-6 shadow-[0_0_30px_rgba(90,143,83,0.5)]"></div>
+                                    <p className="text-white font-bold tracking-wide text-lg drop-shadow-md">Analyzing Skin...</p>
+                                    <p className="text-white/70 text-sm mt-2 font-medium">Extracting aura parameters</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Scan phase status text — floating, no oval */}
+                        {scanPhase !== 'idle' && (
+                            <div className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center">
+                                <div className="mt-[300px] text-center">
+                                    <span className="bg-black/40 backdrop-blur-md text-white/90 text-xs px-4 py-1.5 rounded-full font-semibold uppercase tracking-widest border border-white/10 shadow-lg">
+                                        {scanPhase === 'straight' ? 'Look Straight' :
+                                         scanPhase === 'left' ? 'Turn Left' :
+                                         scanPhase === 'right' ? 'Turn Right' :
+                                         'Perfect'}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
+
+            {/* Bottom Controls Panel */}
+            <div className="absolute bottom-0 inset-x-0 z-50 bg-gradient-to-t from-black via-black/80 to-transparent pt-16 pb-6 px-6">
+               
+                {/* Instruction Text */}
+                <div className="text-center mb-4">
+                    <h3 className="text-white text-[17px] font-bold mb-1 tracking-wide">
+                        {scanPhase === 'straight' && 'Look Straight at Camera'}
+                        {scanPhase === 'left' && 'Slowly Turn Head Left'}
+                        {scanPhase === 'right' && 'Slowly Turn Head Right'}
+                        {scanPhase === 'idle' && !meshReady && 'Loading AI Engine...'}
+                        {scanPhase === 'idle' && meshReady && 'Ready to Scan'}
+                        {scanPhase === 'done' && 'Scan Complete'}
+                    </h3>
+                    <p className="text-white/50 text-[13px] font-medium">
+                        {scanPhase !== 'idle' && scanPhase !== 'done' ? 'Hold pose until prompt changes' : 
+                         scanPhase === 'idle' && meshReady ? 'Tap Start Scan to begin' : 'Ensure good lighting for best results'}
+                    </p>
+                </div>
+
+                <div className="flex items-center justify-center pb-2">
+                    {scanPhase === 'idle' ? (
+                        /* Start Scan Button */
+                        <button 
+                            onClick={startMultiScan}
+                            disabled={isAnalyzing || !meshReady}
+                            className={`w-full max-w-xs py-4 rounded-full font-bold text-[17px] tracking-wide transition-all duration-300 ${
+                                meshReady 
+                                    ? 'bg-white text-black active:scale-95 shadow-[0_0_30px_rgba(255,255,255,0.3)]' 
+                                    : 'bg-white/20 text-white/40 cursor-not-allowed'
+                            }`}
+                        >
+                            {meshReady ? 'Start Scan' : 'Loading...'}
+                        </button>
+                    ) : (
+                        /* Scanning indicator */
+                        <div className="flex items-center gap-3 px-8 py-4 rounded-full bg-[#5A8F53]/20 border border-[#5A8F53]/40">
+                            <div className="w-3 h-3 bg-[#5A8F53] rounded-full animate-pulse"></div>
+                            <span className="text-white font-semibold text-[15px] tracking-wide">
+                                {scanPhase === 'done' ? 'Processing...' : 'Scanning...'}
+                            </span>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            <canvas ref={canvasRef} className="hidden" />
         </div>
     );
 }

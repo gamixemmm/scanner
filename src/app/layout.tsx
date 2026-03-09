@@ -1,20 +1,29 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: "#F8F9FB",
+};
 
 export const metadata: Metadata = {
-  title: "Aura - AI Cosmetic Advisor",
-  description: "Personalized cosmetic advice based on AI facial analysis.",
+  title: "Derma — Cosmetic Advisor",
+  description: "Your personal cosmetologist. Scan your face, scan a product, and get expert guidance.",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Derma",
+  },
 };
 
 export default function RootLayout({
@@ -24,9 +33,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className={`${inter.variable} antialiased`} style={{ fontFamily: "var(--font-inter), system-ui, sans-serif" }}>
         {children}
       </body>
     </html>

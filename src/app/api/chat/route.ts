@@ -22,7 +22,7 @@ export async function POST(req: Request) {
 
     const hasFaceAnalysis = contextData?.analysisResult || contextData?.userProfile?.skinType !== 'Unknown';
     
-    const systemPrompt = `You are Aura, an elite personal cosmetologist and AI skincare advisor.
+    const systemPrompt = `You are Derma, an elite personal cosmetologist and AI skincare advisor.
 Your tone is professional, sophisticated, empathetic, and encouraging.
 
 CRITICAL MEDICAL & SAFETY RULES (STRICTLY ENFORCED):
